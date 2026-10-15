@@ -1,0 +1,5 @@
+{% extends "base.html" %}{% block title %}我的提问 · 卡序问答库{% endblock %}{% block body %}
+<div class="card"><h1>我的提问</h1>
+<div class="sugg">{% for r in rows %}<a href="/q/{{ r.id }}"><span class="pill">{{ r.status }}</span> {{ r.raw_text[:60] }}{% if r.entry_id %} <span class="pill ok">{{ r.entry_id }}</span>{% endif %}</a>
+{% else %}<p class="sub">还没有提过问题。<a href="/">去提问</a></p>{% endfor %}</div></div>
+{% endblock %}

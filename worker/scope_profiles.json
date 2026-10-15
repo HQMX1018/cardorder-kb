@@ -1,0 +1,15 @@
+{
+  "global_deny": [
+    ".env", ".env.*", "*.env", "*.pem", "*.key", "*.p12", "*.jks", "*.keystore",
+    "AccessKey*", "*.testadmin", "*secret*", "*credential*", "id_rsa*",
+    "*.sql", "*.sql.gz", "*.dump", "*.db", "*.sqlite",
+    ".claude/*", ".codex/*", ".qwen/*", "memory/*"
+  ],
+  "text_ext": [".py", ".dart", ".md", ".arb", ".json", ".yaml", ".yml", ".toml", ".ts", ".tsx", ".js",
+               ".html", ".css", ".sql.j2", ".txt", ".sh", ".ini", ".cfg", ".xml", ".gradle", ".kt", ".swift", ".csv"],
+  "profiles": {
+    "full": {"allow": ["*"], "deny": []},
+    "ops":  {"allow": ["docs/*", "flutter/lib/l10n/*", "CLAUDE.md"], "deny": []},
+    "dev":  {"allow": ["*"], "deny": ["backend/app/refund/*", "backend/app/services/payment/*"]}
+  }
+}

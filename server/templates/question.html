@@ -1,0 +1,77 @@
+{% extends "base.html" %}{% set q = v.q %}{% block body %}
+<div class="card">
+  <p class="sub">你的问题 · <span class="pill">{{ q.status }}</span></p>
+  <p style="white-space:pre-wrap;margin:6px 0">{{ q.raw_text }}</p>
+  {% for n in q.images %}<img class="shot" src="/upload/{{ q.id }}/{{ n }}" alt="截图">{% endfor %}
+</div>
+
+{% if q.status in pending %}
+<div class="card"><p><span class="spin"></span>
+  {% if q.status == '追问生成中' %}正在帮你把问题补充完整…{% elif q.status == '排队' %}排队中{% if v.queue_ahead %}，前面还有 {{ v.queue_ahead }} 个{% endif %}…{% else %}正在查项目作答，一般 1–3 分钟…{% endif %}</p>
+  {% if not v.worker_online %}<p class="notice">作答电脑暂时离线，开机后自动处理，题目不会丢。</p>{% endif %}
+  {% if q.status == '追问生成中' %}<form method="post" action="/q/{{ q.id }}/skip"><button class="btn ghost small">不等了，直接提问</button></form>{% endif %}
+</div>
+<script>
+(function poll(){setTimeout(async()=>{try{const r=await fetch('/api/q/{{ q.id }}/state');const d=await r.json();
+ if(d.status!=='{{ q.status }}'||d.answers!=={{ v.answers|length }}){location.reload();return}}catch(e){} poll()},3000)})();
+</script>
+{% endif %}
+
+{% if q.status == '命中资料' and hit %}
+<div class="card"><h2>资料库里可能已经有答案</h2>
+  <p><a href="/kb/{{ hit.id }}">{{ hit.title }} ›</a></p>
+  <form method="post" action="/q/{{ q.id }}/skip"><button class="btn ghost">不是我要的，继续提问</button></form></div>
+{% endif %}
+
+{% if q.status == '追问中' and q.clarify %}
+<div class="card"><h2>帮我们把问题问清楚</h2>
+  <p class="sub">点选就行；都不合适就在「其他」里写。{% if q.clarify.template %}（作答电脑离线，先用通用问题）{% endif %}</p>
+  <form method="post" action="/q/{{ q.id }}/clarify">
+  {% for item in q.clarify.questions %}{% set i = loop.index0 %}
+    <div class="q"><b>{{ loop.index }}. {{ item.q }}</b><div class="opts">
+    {% for o in item.options %}<label><input type="radio" name="pick_{{ i }}" value="{{ o }}"> {{ o }}</label>{% endfor %}
+    <input type="text" name="other_{{ i }}" placeholder="其他（自己写）" maxlength="300"></div></div>
+  {% endfor %}
+  <div class="row"><button class="btn">提交问题</button></div></form>
+  <form method="post" action="/q/{{ q.id }}/skip" style="margin-top:8px"><button class="btn ghost small">跳过，直接提问</button></form>
+</div>
+{% endif %}
+
+{% for a in v.answers|reverse %}{% if loop.first %}
+<div class="card answer">
+  <div class="row"><h2 style="margin:0">回答</h2>
+    {% if v.answers|length > 1 %}<span class="pill">第 {{ a.version }} 版</span>{% endif %}
+    <span class="pill {{ 'ok' if a.confidence=='high' else 'warn' if a.confidence=='low' }}">把握：{{ {'high':'高','medium':'中','low':'低'}.get(a.confidence, a.confidence) }}</span>
+    {% if q.entry_id %}<a class="pill ok" href="/kb/{{ q.entry_id }}">已收入资料库 {{ q.entry_id }}</a>{% endif %}</div>
+  {{ a.plain_md | md }}
+  {% if a.mismatches %}<div class="notice"><b>发现文案和实际做法对不上：</b><ul>{% for m in a.mismatches %}<li>{{ m }}</li>{% endfor %}</ul>
+    <details><summary>生成 bug 草稿（复制后去研发平台提）</summary><textarea readonly rows="8">标题：{{ (q.card.summary if q.card else q.raw_text)[:40] }} —— 文案与实现不一致
+页面：{{ q.card.page if q.card else '' }}
+实际结果：
+{% for m in a.mismatches %}- {{ m }}
+{% endfor %}依据：
+{% for e in a.evidence[:6] %}- {{ e.file }}:{{ e.line }}
+{% endfor %}来源：卡序问答库 /q/{{ q.id }}</textarea></details></div>{% endif %}
+  <details><summary>依据（给开发看）· {{ a.evidence|length }} 条证据{% if a.dropped %}，已剔除 {{ a.dropped|length }} 条无法核实的{% endif %}</summary>
+    {{ a.detail_md | md }}
+    {% for e in a.evidence %}<div class="ev"><code>{{ e.file }}:{{ e.line }}</code><br>{{ e.quote }}</div>{% endfor %}
+    <p class="sub">依据代码版本 {{ a.commit_sha }}</p></details>
+  {% if a.needs_review %}<p class="notice">这条回答{% if not a.evidence %}没有可核实的依据{% else %}命中了敏感信息过滤{% endif %}，需要管理员审核后才能收入资料库。</p>{% endif %}
+</div>
+{% if q.asker == user.userid and q.status not in pending %}
+<div class="card"><h2>这个回答怎么样？</h2>
+  <div class="row">
+    <form method="post" action="/q/{{ q.id }}/feedback"><input type="hidden" name="verdict" value="useful"><button class="btn">有用{% if not q.entry_id and not a.needs_review %}，收入资料库{% endif %}</button></form>
+  </div>
+  <form method="post" action="/q/{{ q.id }}/feedback" style="margin-top:12px"><input type="hidden" name="verdict" value="unclear">
+    <input type="text" name="note" required maxlength="1000" placeholder="没懂？写下哪里没懂，我们接着答"> <button class="btn ghost small" style="margin-top:6px">没懂，继续问</button></form>
+  <form method="post" action="/q/{{ q.id }}/feedback" style="margin-top:12px"><input type="hidden" name="verdict" value="wrong">
+    <input type="text" name="note" required maxlength="1000" placeholder="答错了？写一句哪里不对"> <button class="btn ghost small" style="margin-top:6px">答错了</button></form>
+</div>{% endif %}
+{% if user.is_admin and not q.entry_id %}<form method="post" action="/q/{{ q.id }}/publish"><button class="btn ghost small">管理员：审核通过并收入资料库</button></form>{% endif %}
+{% else %}
+<details class="card"><summary>第 {{ a.version }} 版回答</summary>{{ a.plain_md | md }}</details>
+{% endif %}{% endfor %}
+
+{% if q.status == '失败' %}<div class="card"><p class="notice">这次没能答出来（重试了 3 次）。可以换个说法再问一次。</p></div>{% endif %}
+{% endblock %}

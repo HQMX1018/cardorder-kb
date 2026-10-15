@@ -1,0 +1,11 @@
+{% extends "base.html" %}{% block title %}{{ e.title }} · 卡序问答库{% endblock %}{% block body %}
+<div class="card answer">
+  <div class="row"><span class="sub">{{ e.id }} · 更新于 {{ e.updated }}</span>
+    <a class="btn ghost small" style="margin-left:auto" href="/e/{{ e.id }}.md">下载 .md</a></div>
+  <h1 style="margin-top:8px">{{ e.title }}</h1>
+  {% for t in e.tags %}<span class="pill">{{ t }}</span>{% endfor %}
+  {{ e.body | md }}
+  {% if e.meta.source_commit %}<p class="sub">依据代码版本 {{ e.meta.source_commit }}</p>{% endif %}
+</div>
+<p class="sub">还有疑问？<a href="/">继续提问</a></p>
+{% endblock %}

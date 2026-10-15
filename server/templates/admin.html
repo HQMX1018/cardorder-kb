@@ -1,0 +1,12 @@
+{% extends "base.html" %}{% block title %}管理 · 卡序问答库{% endblock %}{% block body %}
+{% if msg %}<p class="notice">{{ msg }}</p>{% endif %}
+<div class="card"><h2>待审核的回答（无可核实依据 / 命中敏感过滤）</h2>
+<div class="sugg">{% for r in review %}<a href="/q/{{ r.id }}">{{ r.raw_text[:60] }} <span class="sub">· {{ r.asker }} · 第 {{ r.version }} 版</span></a>{% else %}<p class="sub">没有</p>{% endfor %}</div></div>
+<div class="card"><h2>导入 .md / 重建索引</h2>
+<form method="post" action="/admin/import" enctype="multipart/form-data" class="row"><input type="file" name="files" accept=".md" multiple required><button class="btn small">导入</button></form>
+<form method="post" action="/admin/reindex" style="margin-top:10px"><button class="btn ghost small">从 data/entries 重建索引</button></form></div>
+<div class="card"><h2>最近任务</h2><div class="scroll"><table><tr><th>任务</th><th>问题</th><th>类型</th><th>状态</th><th>次数</th><th>worker</th><th>错误</th></tr>
+{% for j in jobs %}<tr><td>{{ j.id }}</td><td><a href="/q/{{ j.question_id }}">{{ j.question_id }}</a></td><td>{{ j.kind }}</td><td>{{ j.state }}</td><td>{{ j.attempts }}</td><td>{{ j.worker or '' }}</td><td>{{ (j.error or '')[:80] }}</td></tr>{% endfor %}</table></div></div>
+<div class="card"><h2>审计日志</h2><div class="scroll"><table><tr><th>时间</th><th>谁</th><th>动作</th><th>对象</th><th>详情</th></tr>
+{% for l in logs %}<tr><td>{{ l.at|int }}</td><td>{{ l.actor }}</td><td>{{ l.action }}</td><td>{{ l.target }}</td><td>{{ (l.detail or '')[:120] }}</td></tr>{% endfor %}</table></div></div>
+{% endblock %}

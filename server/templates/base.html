@@ -1,0 +1,12 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}卡序问答库{% endblock %}</title>
+<link rel="stylesheet" href="/static/app.css"></head><body>
+<header><div class="bar">
+  <a class="brand" href="/">卡序问答库</a>
+  <nav><a href="/">提问</a><a href="/kb">资料库</a>{% if user %}<a href="/mine">我的提问</a>{% endif %}<a href="/help">帮助</a>{% if user and user.is_admin %}<a href="/admin">管理</a>{% endif %}</nav>
+  <div class="me"><span title="作答电脑{{ '在线' if worker_online else '离线' }}"><span class="dot {{ 'on' if worker_online }}"></span>作答{{ '在线' if worker_online else '离线' }}</span>
+  {% if user %}{{ user.name }} · <a href="/logout">退出</a>{% endif %}</div>
+</div></header>
+<main>{% block body %}{% endblock %}</main>
+</body></html>

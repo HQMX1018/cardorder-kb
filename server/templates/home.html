@@ -1,0 +1,26 @@
+{% extends "base.html" %}{% block body %}
+<div class="card">
+  <h1>有什么想问的？</h1>
+  <p class="sub">用你自己的话写，不用很专业。可以附截图（最多 3 张）。</p>
+  <form method="post" action="/ask" enctype="multipart/form-data" id="askf">
+    <textarea name="text" id="text" maxlength="2000" required placeholder="例如：商品详情里的市场参考价，切换 30 天、90 天会变吗？"></textarea>
+    <div class="sugg" id="sugg"></div>
+    <div class="row" style="margin-top:10px">
+      <input type="file" name="images" accept="image/png,image/jpeg" multiple>
+      <button class="btn" style="margin-left:auto">提问</button>
+    </div>
+  </form>
+  {% if not worker_online %}<p class="notice">作答电脑暂时离线：问题会先排队，开机后自动处理，不会丢。</p>{% endif %}
+</div>
+{% if recent %}<div class="card"><h2>最近的资料</h2>
+  <div class="sugg">{% for e in recent %}<a href="/kb/{{ e.id }}">{{ e.title }}{% for t in e.tags %} <span class="pill">{{ t }}</span>{% endfor %}</a>{% endfor %}</div>
+  <p><a href="/kb">全部资料 ›</a></p></div>{% endif %}
+<script>
+const t=document.getElementById('text'),s=document.getElementById('sugg');let timer;
+t.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(async()=>{
+  const q=t.value.trim(); if(q.length<2){s.innerHTML='';return}
+  try{const r=await fetch('/api/entries/search?q='+encodeURIComponent(q));const d=await r.json();
+    s.innerHTML=d.length?'<p class="sub" style="margin:10px 0 0">可能是你要找的：</p>'+d.map(e=>{const a=document.createElement('a');a.href='/kb/'+e.id;a.textContent=e.title;return a.outerHTML}).join(''):'';
+  }catch(e){}},400)});
+</script>
+{% endblock %}

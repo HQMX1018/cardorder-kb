@@ -1,0 +1,13 @@
+{% extends "base.html" %}{% block title %}资料库 · 卡序问答库{% endblock %}{% block body %}
+<div class="card">
+  <h1>资料库</h1>
+  <form method="get" action="/kb" class="row"><input type="text" name="q" value="{{ q }}" placeholder="搜关键词，比如 参考价 / 发货时限" style="flex:1"><button class="btn">搜索</button></form>
+  {% if tags %}<p style="margin:10px 0 0">{% for t in tags %}<a class="pill {{ 'ok' if t==tag }}" href="/kb?tag={{ t|urlencode }}">{{ t }}</a>{% endfor %}{% if tag %}<a class="pill" href="/kb">全部</a>{% endif %}</p>{% endif %}
+</div>
+<div class="card sugg">
+  {% for e in items %}<a href="/kb/{{ e.id }}"><b>{{ e.title }}</b> <span class="sub">{{ e.id }}</span>{% for t in e.tags %} <span class="pill">{{ t }}</span>{% endfor %}
+    {% if e.snippet %}<br><span class="sub">{{ e.snippet }}</span>{% endif %}</a>
+  {% else %}<p class="sub">没有找到。{% if q %}可以<a href="/">直接提问</a>。{% endif %}</p>{% endfor %}
+</div>
+<p class="sub"><a href="/export.zip">下载全部（.md 压缩包）</a> · <a href="/llms.txt">llms.txt</a></p>
+{% endblock %}
