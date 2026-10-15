@@ -1,10 +1,11 @@
 """过滤器验收：路径越界 / 禁读 / 脱敏 / 配额 / profile 收窄。"""
+import sys as _s; from pathlib import Path as _P; _s.path.insert(0, str(_P(__file__).resolve().parent.parent / "worker"))
 import sys, json
 from pathlib import Path
 from codebox import Box, LIMITS
 from redact import redact
 snap = Path(sys.argv[1]); audit = Path(sys.argv[2]); audit.unlink(missing_ok=True)
-prof = str(Path(__file__).with_name("scope_profiles.json"))
+prof = str(Path(__file__).resolve().parent.parent / "worker" / "scope_profiles.json")
 b = Box(snap, "full", prof, "T1", audit)
 ok = 0; fail = []
 def expect(name, cond):

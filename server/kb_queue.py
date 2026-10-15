@@ -102,11 +102,28 @@ def follow_up(user, qid, text):
         audit(c, user["userid"], "followup", qid, text[:200])
 
 
+CLARIFY_WAIT = 30   # 追问任务排队超过这么久还没被领走（或作答电脑离线）→ 换模板题，不让用户干等
+
+
+def _clarify_fallback(c, q):
+    if q["status"] != "追问生成中":
+        return q
+    job = c.execute("SELECT id, created_at FROM jobs WHERE question_id=? AND kind='clarify' AND state='queued'",
+                    (q["id"],)).fetchone()
+    if job and (not worker_online(c) or time.time() - job["created_at"] > CLARIFY_WAIT):
+        c.execute("UPDATE jobs SET state='failed', error='clarify fallback: not picked up' WHERE id=?", (job["id"],))
+        c.execute("UPDATE questions SET status='追问中', clarify_json=? WHERE id=?",
+                  (json.dumps(TEMPLATE_CLARIFY, ensure_ascii=False), q["id"]))
+        q = c.execute("SELECT * FROM questions WHERE id=?", (q["id"],)).fetchone()
+    return q
+
+
 def question_view(qid):
     with db() as c:
         q = c.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
         if not q:
             return None
+        q = _clarify_fallback(c, q)
         ans = [dict(r) for r in c.execute("SELECT * FROM answers WHERE question_id=? ORDER BY version", (qid,))]
         mine = c.execute("SELECT MAX(created_at) FROM jobs WHERE question_id=? AND state='queued'", (qid,)).fetchone()[0]
         ahead = c.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued','leased') AND created_at<?",

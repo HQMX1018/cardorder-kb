@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 import threading
+import traceback
 import time
 import urllib.error
 import urllib.request
@@ -44,19 +45,23 @@ def heartbeat_loop(job_id, stop):
 
 
 def current_snapshot(runtime, profile):
-    snap, sha = (Path(runtime) / "snapshots" / f"current_{profile}.txt").read_text(encoding="utf-8").split()[:2]
-    return Path(snap), sha
+    for _ in range(10):               # 指针文件由 snapshot.build 原子替换；仍防御性重试
+        parts = (Path(runtime) / "snapshots" / f"current_{profile}.txt").read_text(encoding="utf-8").split()
+        if len(parts) >= 2 and Path(parts[0]).is_dir():
+            return Path(parts[0]), parts[1]
+        time.sleep(1)
+    raise RuntimeError(f"代码快照不可用：current_{profile}.txt")
 
 
 def handle(job, runtime):
     job_id, kind, payload = job["id"], job["kind"], job["payload"]
     profile = payload.get("scope", "full")            # 145 按提问人角色写入，模型改不了
-    snap, sha = current_snapshot(runtime, profile)
     audit = Path(runtime) / "audit" / f"{job_id}.jsonl"
-    audit.parent.mkdir(parents=True, exist_ok=True)
     stop = threading.Event()
     threading.Thread(target=heartbeat_loop, args=(job_id, stop), daemon=True).start()
-    try:
+    try:                              # 任何异常都必须回传 145，否则题目要等 15 分钟租约过期
+        audit.parent.mkdir(parents=True, exist_ok=True)
+        snap, sha = current_snapshot(runtime, profile)
         images = []
         for i, url in enumerate(payload.get("images", [])[:3]):   # 用户截图 → 本地临时文件 → codex -i
             req = urllib.request.Request(BASE + url, headers={"X-KB-Worker": TOKEN})
@@ -80,6 +85,7 @@ def handle(job, runtime):
             body.update(kept=kept, dropped=dropped)
         http("POST", f"/api/worker/result/{job_id}?worker={NAME}", body)
     except Exception as e:
+        traceback.print_exc()
         try:
             http("POST", f"/api/worker/result/{job_id}?worker={NAME}", {"error": f"{type(e).__name__}: {e}"[:1500]})
         except Exception:
@@ -89,12 +95,16 @@ def handle(job, runtime):
         print(time.strftime("%H:%M:%S"), kind, job_id, "done", flush=True)
 
 
+FIRST_SNAPSHOT = threading.Event()
+
+
 def snapshot_loop(repo, runtime):
     while True:
         try:
             snapshot.build(repo, Path(runtime) / "snapshots", "full", HERE / "scope_profiles.json")
         except Exception as e:
-            print("snapshot failed:", e)
+            print("snapshot failed:", e, flush=True)
+        FIRST_SNAPSHOT.set()
         time.sleep(3600)
 
 
@@ -105,8 +115,10 @@ def main():
     ap.add_argument("--once", action="store_true", help="只处理一题后退出（验收用）")
     a = ap.parse_args()
     threading.Thread(target=snapshot_loop, args=(a.repo, a.runtime), daemon=True).start()
+    FIRST_SNAPSHOT.wait(600)          # 首次快照（fetch + 可能重建）完成后再领题
     while not (Path(a.runtime) / "snapshots" / "current_full.txt").exists():
         time.sleep(2)
+    print(time.strftime("%H:%M:%S"), "worker ready", NAME, flush=True)
     pool = ThreadPoolExecutor(CONCURRENCY)
     busy = threading.Semaphore(CONCURRENCY)
     fails = 0

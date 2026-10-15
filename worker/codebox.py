@@ -53,7 +53,15 @@ class Box:
         self.job, self.audit = job, Path(audit)
         self.calls = 0
         self.bytes = 0
-        self.index = self._build_index()
+        self._index = None
+
+    @property
+    def index(self):
+        """首次用到才建（扫 8000+ 文件要数秒）。启动时建会拖慢 MCP 握手：
+        后台任务计划里实测 6.7s，Codex 等不及就丢掉 codebox，模型零调用答「未查到」。"""
+        if self._index is None:
+            self._index = self._build_index()
+        return self._index
 
     # ── L2 路径过滤 ──
     def visible(self, rel: str) -> bool:

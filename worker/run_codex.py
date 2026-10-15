@@ -68,5 +68,10 @@ def run(kind, job, task, snapshot, profile, audit, timeout=900, model=None, imag
         (work / "stderr.txt").write_text(cp.stderr, encoding="utf-8")   # 失败现场留在 work 目录
         raise RuntimeError(f"codex 退出码 {cp.returncode}: {cp.stderr[-800:]}")
     result = json.loads(out_file.read_text(encoding="utf-8"))
+    if not Path(audit).exists():   # codebox 零调用：留现场（stderr 里有 MCP 启动失败原因）
+        dbg = Path(audit).parent.parent / "debug"
+        dbg.mkdir(parents=True, exist_ok=True)
+        (dbg / f"{job}.stderr.txt").write_text(cp.stderr, encoding="utf-8")
+        (dbg / f"{job}.stdout.jsonl").write_text(cp.stdout, encoding="utf-8")
     shutil.rmtree(work, ignore_errors=True)
     return result, cp.stdout

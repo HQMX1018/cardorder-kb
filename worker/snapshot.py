@@ -6,9 +6,11 @@
 import argparse
 import io
 import json
+import os
 import shutil
 import subprocess
 import tarfile
+import time
 from pathlib import Path
 
 from codebox import _glob_hit
@@ -42,7 +44,15 @@ def build(repo, out, profile, profiles_file, ref="origin/main"):
                     kept += 1
         tmp.rename(dest)
         print(f"snapshot {dest.name}: kept={kept} dropped={dropped}")
-    (Path(out) / f"current_{profile}.txt").write_text(f"{dest}\n{sha}\n", encoding="utf-8")
+    ptr = Path(out) / f"current_{profile}.txt"      # 原子替换：worker 可能正在读
+    tmp_ptr = ptr.with_suffix(".tmp")
+    tmp_ptr.write_text(f"{dest}\n{sha}\n", encoding="utf-8")
+    for _ in range(5):
+        try:
+            os.replace(tmp_ptr, ptr)
+            break
+        except PermissionError:
+            time.sleep(0.5)
     olds = sorted(Path(out).glob(f"{profile}-*"), key=lambda p: p.stat().st_mtime)[:-2]
     for o in olds:
         shutil.rmtree(o, ignore_errors=True)
