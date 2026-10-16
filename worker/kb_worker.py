@@ -28,6 +28,24 @@ CONCURRENCY = 2
 BACKOFF = [5, 10, 20, 40, 60]
 HERE = Path(__file__).resolve().parent
 
+# 145 是内网地址，必须直连：本机开着系统代理（Clash 127.0.0.1:7897）时 urllib 会把请求绕进代理，
+# 代理一重启或掐断 25s 长轮询就整夜「145 不可达」。本进程只和 145 通信，全局去掉代理（codebox 同进程共享）。
+urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))
+LOCK_EXIT = 3                     # 已有实例在跑：run_worker.cmd 见此退出码即结束循环，不重复拉起
+
+
+def single_instance(runtime):
+    """进程级互斥：锁住 runtime/worker.lock，拿不到说明已有 worker，直接退出。句柄须存活到进程结束。"""
+    import msvcrt
+    f = open(Path(runtime) / "worker.lock", "a+")
+    f.seek(0)
+    try:
+        msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        print(time.strftime("%H:%M:%S"), "已有 worker 在运行，本实例退出", flush=True)
+        raise SystemExit(LOCK_EXIT)
+    return f
+
 
 def http(method, path, body=None, timeout=40):
     req = urllib.request.Request(BASE + path, method=method, headers={"X-KB-Worker": TOKEN, "Content-Type": "application/json"},
@@ -114,6 +132,7 @@ def main():
     ap.add_argument("--runtime", required=True)
     ap.add_argument("--once", action="store_true", help="只处理一题后退出（验收用）")
     a = ap.parse_args()
+    _lock = single_instance(a.runtime)  # noqa: F841  持有到进程退出
     threading.Thread(target=snapshot_loop, args=(a.repo, a.runtime), daemon=True).start()
     FIRST_SNAPSHOT.wait(600)          # 首次快照（fetch + 可能重建）完成后再领题
     while not (Path(a.runtime) / "snapshots" / "current_full.txt").exists():
