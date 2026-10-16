@@ -1,9 +1,12 @@
-"""问题流程 + 任务队列 + worker 接口（长轮询 / 租约 / 心跳 / 回传 / L5 出口过滤）。"""
+"""问题流程 + 任务队列 + worker 接口（推送 / 长轮询 / 租约 / 心跳 / 回传 / L5 出口过滤）。"""
 import asyncio
 import datetime
 import json
 import os
+import threading
 import time
+import urllib.error
+import urllib.request
 
 from fastapi import APIRouter, Header, HTTPException, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
@@ -42,6 +45,7 @@ def enqueue(c, qid, kind, payload):
     c.execute("INSERT INTO jobs(id,question_id,kind,priority,state,payload,created_at) VALUES(?,?,?,?,?,?,?)",
               (new_id(), qid, kind, 0 if kind == "clarify" else 1, "queued",
                json.dumps(payload, ensure_ascii=False), time.time()))
+    WAKE.set()                        # 连接是自动提交，此刻推送线程已能看到这条任务
 
 
 def _payload(q, card):
@@ -256,6 +260,7 @@ async def worker_result(job_id: str, request: Request, worker: str = "w1", x_kb_
                           (json.dumps(res, ensure_ascii=False), qid))
         c.execute("UPDATE jobs SET state='done', result=? WHERE id=?", (json.dumps(res, ensure_ascii=False), job_id))
         audit(c, worker, "result:" + job["kind"], qid, json.dumps(body.get("dropped", []), ensure_ascii=False)[:500])
+    WAKE.set()                        # 本机空出一个作答位，排着的题可以推了
     return {"ok": True}
 
 
@@ -283,8 +288,123 @@ def worker_bugs_search(q: str, x_kb_worker: str = Header("")):
 @router.get("/api/worker/status")
 def worker_status():
     with db() as c:
-        return {"online": worker_online(c),
+        return {"online": worker_online(c), "push": bool(PUSH.get("port")) and time.time() - PUSH_OK[0] < OFFLINE_AFTER,
                 "queued": c.execute("SELECT COUNT(*) FROM jobs WHERE state='queued'").fetchone()[0]}
+
+
+# ── 推送：留言入队即经 SSH 反向隧道推给本机 worker ──
+# 本机 worker 常驻 `ssh -R 127.0.0.1:0:127.0.0.1:8091 cardxu@145`，sshd 在 145 回环口分配端口，
+# worker 拿到端口后 POST /api/worker/register 登记；之后 145 只往自己的 127.0.0.1:<port> 推，
+# 任务经隧道直达本机。145 不需要能访问本机、本机也不开入站端口。
+PUSH_FILE = store.DATA / "push_target.json"     # 登记持久化：145 服务重启后不用等本机重登记
+PUSH_SWEEP = 15                                 # 无事件时的巡检间隔：探活 + 补推（租约过期回队的题）
+PUSH_BUSY_RETRY = 3                             # 本机作答位满时的重试间隔
+WAKE = threading.Event()
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))   # 推的是本机回环口，绝不走代理
+PUSH_OK = [0.0]                                 # 最近一次推送 / 探活成功的时间
+try:
+    PUSH = json.loads(PUSH_FILE.read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    PUSH = {}
+
+
+def _push_call(method, path, body=None, port=None, timeout=5):
+    port = port or PUSH.get("port")
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", method=method,
+                                 headers={"X-KB-Worker": WORKER_TOKEN, "Content-Type": "application/json"},
+                                 data=json.dumps(body, ensure_ascii=False).encode("utf-8") if body is not None else None)
+    try:
+        with _OPENER.open(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        return e.code, None
+
+
+def _alive(worker):
+    PUSH_OK[0] = time.time()
+    with db() as c:                   # 沿用 workers.last_seen：worker_online / 模板追问兜底的判断不变
+        c.execute("INSERT INTO workers VALUES(?,?) ON CONFLICT(name) DO UPDATE SET last_seen=excluded.last_seen",
+                  (worker, time.time()))
+
+
+def _unclaim(job_id):
+    """推送没送达：任务原样退回队列，不消耗重试次数。"""
+    with db() as c:
+        r = c.execute("UPDATE jobs SET state='queued', worker=NULL, attempts=attempts-1 WHERE id=? AND state='leased' "
+                      "RETURNING question_id, kind", (job_id,)).fetchone()
+        if r and r["kind"] == "answer":
+            c.execute("UPDATE questions SET status='排队' WHERE id=? AND status='作答中'", (r["question_id"],))
+
+
+def _dispatch_once():
+    """推空队列或推到本机满为止。返回下次巡检前要等的秒数。"""
+    worker = PUSH.get("worker")
+    if not PUSH.get("port"):
+        return PUSH_SWEEP
+    try:
+        status, _ = _push_call("GET", "/ping")
+    except (urllib.error.URLError, OSError):
+        return PUSH_SWEEP             # 隧道不通：本机关机/断网/重连中，题留在队列等它重新登记
+    if status != 200:
+        return PUSH_SWEEP
+    _alive(worker)
+    while True:
+        with db() as c:
+            _reap(c)
+            job = _claim(c, worker)
+        if not job:
+            return PUSH_SWEEP
+        job["payload"] = json.loads(job["payload"])
+        try:
+            status, _ = _push_call("POST", "/job", job)
+        except (urllib.error.URLError, OSError):
+            _unclaim(job["id"])
+            return PUSH_SWEEP
+        if status == 503:             # 本机两个作答位都在忙
+            _unclaim(job["id"])
+            return PUSH_BUSY_RETRY
+        if status != 202:
+            _unclaim(job["id"])
+            return PUSH_SWEEP
+        _alive(worker)
+
+
+def _dispatcher():
+    wait = 0
+    while True:
+        WAKE.wait(wait)
+        WAKE.clear()
+        try:
+            wait = _dispatch_once()
+        except Exception as e:        # 推送线程不能死，死了就退化成没人派题
+            print("push dispatcher error:", type(e).__name__, e, flush=True)
+            wait = PUSH_SWEEP
+
+
+def start_dispatcher():
+    threading.Thread(target=_dispatcher, name="kb-push", daemon=True).start()
+
+
+@router.post("/api/worker/register")
+def worker_register(port: int, worker: str = "w1", x_kb_worker: str = Header("")):
+    """本机隧道建好后登记端口；先经隧道回探一次，确认真能推到才生效。"""
+    _auth(x_kb_worker)
+    if not 1024 <= port <= 65535:
+        raise HTTPException(400, "bad port")
+    try:
+        status, info = _push_call("GET", "/ping", port=port)
+    except (urllib.error.URLError, OSError) as e:
+        raise HTTPException(502, f"隧道回探失败：{e}")
+    if status != 200:
+        raise HTTPException(502, f"隧道回探失败：HTTP {status}")
+    PUSH.clear()
+    PUSH.update(port=port, worker=worker[:40], at=time.time())
+    tmp = PUSH_FILE.with_suffix(".tmp")
+    tmp.write_text(json.dumps(PUSH), encoding="utf-8")
+    tmp.replace(PUSH_FILE)
+    _alive(PUSH["worker"])
+    WAKE.set()                        # 本机离线期间排着的题立刻补推
+    return {"ok": True, "port": port}
 
 
 # ── 发布为资料条目 ──

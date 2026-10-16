@@ -14,6 +14,7 @@ from mcp_kb import mcp
 
 @asynccontextmanager
 async def lifespan(app):
+    kb_queue.start_dispatcher()             # 推送线程：留言入队即经 SSH 反向隧道推给本机 worker
     async with mcp.session_manager.run():   # streamable-http 必须在 lifespan 内
         yield
 

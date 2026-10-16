@@ -1,18 +1,21 @@
-"""本机 worker：长轮询 145 领题 → Codex 作答 → 证据核对 + 脱敏 → 回传。
+"""本机 worker：145 经 SSH 反向隧道推题 → Codex 作答 → 证据核对 + 脱敏 → 回传。
 
   set KB_BASE=http://192.168.31.145:8090
   set KB_WORKER_TOKEN=...            # 与 145 的环境变量一致
   python kb_worker.py --repo D:/yuki/aitcg-flutter --runtime D:/kb-worker/runtime
 """
 import argparse
+import hmac
 import json
 import os
+import re
+import subprocess
 import threading
 import traceback
 import time
-import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import evidence
@@ -25,7 +28,7 @@ BASE = os.environ.get("KB_BASE", "http://192.168.31.145:8090").rstrip("/")
 TOKEN = os.environ.get("KB_WORKER_TOKEN", "")
 NAME = os.environ.get("KB_WORKER_NAME", "win-" + os.environ.get("COMPUTERNAME", "w1"))
 CONCURRENCY = 2
-BACKOFF = [5, 10, 20, 40, 60]
+BACKOFF = [5, 10, 20, 40, 60]     # 隧道重连退避
 HERE = Path(__file__).resolve().parent
 
 # 145 是内网地址，必须直连：本机开着系统代理（Clash 127.0.0.1:7897）时 urllib 会把请求绕进代理，
@@ -126,41 +129,116 @@ def snapshot_loop(repo, runtime):
         time.sleep(3600)
 
 
+# ── 推送接收：145 经 SSH 反向隧道把任务推到本机 127.0.0.1:PUSH_PORT（不监听外网，不开入站端口） ──
+PUSH_PORT = int(os.environ.get("KB_PUSH_PORT", "8091"))
+SSH_EXE = os.environ.get("KB_SSH", r"C:\Program Files\OpenSSH\ssh.exe")
+SSH_TARGET = os.environ.get("KB_SSH_TARGET", "cardxu@192.168.31.145")
+FORWARD = f"127.0.0.1:0:127.0.0.1:{PUSH_PORT}"     # 远端端口 0 = 由 145 的 sshd 现分配，躲开残留绑定
+NO_WINDOW = 0x08000000                            # CREATE_NO_WINDOW：隧道进程不弹黑框
+
+
+def serve(runtime, pool, busy):
+    class Handler(BaseHTTPRequestHandler):
+        def _reply(self, code, obj):
+            data = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+
+        def _authed(self):
+            if TOKEN and hmac.compare_digest(self.headers.get("X-KB-Worker", ""), TOKEN):
+                return True
+            self._reply(401, {"error": "bad worker token"})
+            return False
+
+        def do_GET(self):
+            if not self._authed():
+                return
+            if self.path == "/ping":
+                return self._reply(200, {"worker": NAME})
+            self._reply(404, {})
+
+        def do_POST(self):
+            if not self._authed():
+                return
+            if self.path != "/job":
+                return self._reply(404, {})
+            job = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0))) or b"{}")
+            if not busy.acquire(blocking=False):       # 两个作答位都满 → 145 退回队列稍后再推
+                return self._reply(503, {"error": "busy"})
+            print(time.strftime("%H:%M:%S"), "pushed", job.get("kind"), job.get("id"), flush=True)
+            pool.submit(handle, job, runtime).add_done_callback(lambda _f: busy.release())
+            self._reply(202, {"ok": True})
+
+        def log_message(self, *args):
+            pass                      # 每次探活都打一行太吵
+
+    ThreadingHTTPServer(("127.0.0.1", PUSH_PORT), Handler).serve_forever()
+
+
+def kill_stray_tunnels():
+    """上一个 worker 被强杀时，它拉起的 ssh 会成孤儿继续占着隧道，先清掉。"""
+    ps = ("Get-CimInstance Win32_Process -Filter \"Name='ssh.exe'\" | "
+          f"Where-Object {{ $_.CommandLine -like '*{FORWARD}*' }} | ForEach-Object {{ Stop-Process -Id $_.ProcessId -Force }}")
+    subprocess.run(["powershell", "-NoProfile", "-Command", ps], creationflags=NO_WINDOW, capture_output=True, timeout=30)
+
+
+def register(port, proc):
+    """隧道建好后向 145 登记端口；145 会经隧道回探一次才生效。145 暂时不可达就一直重试，直到隧道断。"""
+    for i in range(10 ** 9):
+        if proc.poll() is not None:
+            return
+        try:
+            http("POST", f"/api/worker/register?port={port}&worker={NAME}", {}, timeout=20)
+            print(time.strftime("%H:%M:%S"), "tunnel registered, 145 port", port, flush=True)
+            return
+        except Exception as e:
+            if i == 0:
+                print(time.strftime("%H:%M:%S"), f"登记失败（{e}），每 10s 重试", flush=True)
+            time.sleep(10)
+
+
+def tunnel_loop():
+    kill_stray_tunnels()
+    fails = 0
+    while True:
+        t0 = time.time()
+        proc = subprocess.Popen(
+            [SSH_EXE, "-N", "-T", "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "ConnectTimeout=10",
+             "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", "-R", FORWARD, SSH_TARGET],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            creationflags=NO_WINDOW, text=True, encoding="utf-8", errors="replace")
+        for line in proc.stderr:      # 「Allocated port N for remote forward to …」
+            line = line.strip()
+            m = re.search(r"Allocated port (\d+) for remote forward", line)
+            if m:
+                threading.Thread(target=register, args=(int(m.group(1)), proc), daemon=True).start()
+            elif line:
+                print(time.strftime("%H:%M:%S"), "ssh:", line, flush=True)
+        proc.wait()
+        fails = 0 if time.time() - t0 > 300 else fails + 1     # 稳定跑过 5 分钟才算恢复
+        wait = BACKOFF[min(fails, len(BACKOFF) - 1)]
+        print(time.strftime("%H:%M:%S"), f"隧道断开（ssh 退出码 {proc.returncode}），{wait}s 后重连", flush=True)
+        time.sleep(wait)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--repo", required=True)
     ap.add_argument("--runtime", required=True)
-    ap.add_argument("--once", action="store_true", help="只处理一题后退出（验收用）")
     a = ap.parse_args()
     _lock = single_instance(a.runtime)  # noqa: F841  持有到进程退出
     threading.Thread(target=snapshot_loop, args=(a.repo, a.runtime), daemon=True).start()
-    FIRST_SNAPSHOT.wait(600)          # 首次快照（fetch + 可能重建）完成后再领题
+    FIRST_SNAPSHOT.wait(600)          # 首次快照（fetch + 可能重建）完成后再接题
     while not (Path(a.runtime) / "snapshots" / "current_full.txt").exists():
         time.sleep(2)
-    print(time.strftime("%H:%M:%S"), "worker ready", NAME, flush=True)
     pool = ThreadPoolExecutor(CONCURRENCY)
     busy = threading.Semaphore(CONCURRENCY)
-    fails = 0
-    while True:
-        busy.acquire()                # 满 2 题时不再领新题
-        try:
-            status, job = http("GET", f"/api/worker/next?wait=25&worker={NAME}", timeout=40)
-            fails = 0
-        except (urllib.error.URLError, OSError) as e:
-            busy.release()
-            wait = BACKOFF[min(fails, len(BACKOFF) - 1)]
-            fails += 1
-            print(f"145 不可达（{e}），{wait}s 后重试")
-            time.sleep(wait)
-            continue
-        if status != 200:
-            busy.release()
-            continue                  # 204 = 25 秒内无题，立即再挂
-        fut = pool.submit(handle, job, a.runtime)
-        fut.add_done_callback(lambda _f: busy.release())
-        if a.once:
-            fut.result()
-            return
+    threading.Thread(target=serve, args=(a.runtime, pool, busy), daemon=True).start()
+    print(time.strftime("%H:%M:%S"), "worker ready", NAME, f"push 127.0.0.1:{PUSH_PORT}", flush=True)
+    tunnel_loop()                     # 主线程守着隧道，永不返回
 
 
 if __name__ == "__main__":
