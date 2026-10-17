@@ -147,7 +147,7 @@ async def _mcp(base):
             tools = sorted(t.name for t in (await s.list_tools()).tools)
             check("MCP 8 个工具", tools == ["kb_ask", "kb_feedback", "kb_followup", "kb_get", "kb_onboarding", "kb_publish", "kb_search", "kb_status"], tools)
             res = await s.call_tool("kb_search", {"query": "市场参考价"})
-            check("MCP kb_search", "KB-0001" in res.content[0].text)
+            check("MCP kb_search", any("KB-0001" in getattr(item, 'text', '') for item in res.content))
             res = await s.call_tool("kb_get", {"entry_id": "KB-0001"})
             check("MCP kb_get", "id: KB-0001" in res.content[0].text)
     async with streamablehttp_client(base.rstrip("/") + "/mcp/") as (r, w, _):
