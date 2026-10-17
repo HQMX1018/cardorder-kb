@@ -1,6 +1,30 @@
 {% extends "base.html" %}{% block body %}
+<section class="home-intro">
+  <p class="home-eyebrow">CARDORDER · 团队知识库</p>
+  <h1>找到你的上手指南</h1>
+  <p class="sub">从你的角色出发，了解工具、流程，以及第一件工作怎么完成。</p>
+  <form class="home-search row" action="/kb" method="get" role="search">
+    <label class="home-search-label" for="kb-search">搜索资料</label>
+    <input type="text" id="kb-search" name="q" placeholder="搜索问题、关键词或操作步骤…">
+    <button class="btn" type="submit">搜索</button>
+  </form>
+</section>
+
+<section class="card" aria-labelledby="role-heading">
+  <h2 id="role-heading">你的角色是？</h2>
+  <p class="sub">选择角色，查看新人最先需要弄清楚的问题。兼任多个角色时，可以分别查看。</p>
+  <div class="role-grid">
+  {% for role in roles %}
+    <details class="role-guide"{% if loop.first %} open{% endif %}>
+      <summary><span>{{ role.name }}</span><span class="sub">{{ role.goal }}</span></summary>
+      <ol>{% for question in role.questions %}<li><button type="button" class="role-question" data-question="{{ question }}">{{ question }}</button></li>{% endfor %}</ol>
+    </details>
+  {% endfor %}
+  </div>
+  <p class="sub">上手路径：认识职责 → 取得权限 → 准备工具 → 完成第一件工作 → 知道向谁求助</p>
+</section>
 <div class="card">
-  <h1>有什么想问的？</h1>
+  <h2>还有什么想问的？</h2>
   <p class="sub">用你自己的话写，不用很专业。可以附截图（最多 3 张）。</p>
   <form method="post" action="/ask" enctype="multipart/form-data" id="askf">
     <textarea name="text" id="text" maxlength="2000" required placeholder="例如：商品详情里的市场参考价，切换 30 天、90 天会变吗？"></textarea>
@@ -17,6 +41,15 @@
   <p><a href="/kb">全部资料 ›</a></p></div>{% endif %}
 <script>
 const t=document.getElementById('text'),s=document.getElementById('sugg');let timer;
+document.querySelectorAll('.role-question').forEach(button=>button.addEventListener('click',()=>{
+  if(t.value.trim() && t.value.trim()!==button.dataset.question){
+    if(!window.confirm('用这个上手问题替换当前尚未提交的提问？'))return;
+  }
+  t.value=button.dataset.question;
+  t.dispatchEvent(new Event('input'));
+  t.focus();
+  t.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});
+}));
 t.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(async()=>{
   const q=t.value.trim(); if(q.length<2){s.innerHTML='';return}
   try{const r=await fetch('/api/entries/search?q='+encodeURIComponent(q));const d=await r.json();

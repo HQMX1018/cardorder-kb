@@ -14,6 +14,7 @@ from markupsafe import Markup
 
 import kb_queue
 import store
+import onboarding
 from store import db
 
 router = APIRouter()
@@ -98,7 +99,7 @@ def logout():
 @router.get("/", response_class=HTMLResponse)
 def home(request: Request):
     u = current_user(request)
-    return page(request, "home.html", recent=store.list_entries(store.visible_scopes(u), limit=8))
+    return page(request, "home.html", roles=onboarding.get_guides(), recent=store.list_entries(store.visible_scopes(u), limit=8))
 
 
 def _check_image(data: bytes):
@@ -265,7 +266,7 @@ def export_zip(request: Request):
 def llms(request: Request):
     base = str(request.base_url).rstrip("/")
     lines = ["# 卡序问答库", "", "> 卡序（CardOrder）项目资料库。每篇为 Markdown，含小白版解释与代码证据。",
-             f"> MCP：{base}/mcp/ （请求头 X-KB-Uid: <研发平台 userid>）", "", "## 资料"]
+             f"> MCP：{base}/mcp/ （请求头 X-KB-Uid: <研发平台 userid>）", "", "## 角色上手", "MCP kb_onboarding(role): dev / qa / product / ops；省略 role 返回全部角色。", "返回上手问题清单，不代表权限或核准流程；先 kb_search，再按需 kb_ask。", "", "## 资料"]
     for e in store.list_entries(("public",), limit=100000):
         lines.append(f"- [{e['title']}]({base}/e/{e['id']}.md)")
     return "\n".join(lines) + "\n"

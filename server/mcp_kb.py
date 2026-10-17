@@ -4,6 +4,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 import kb_queue
 import store
+import onboarding
 
 mcp = FastMCP("cardorder-kb", stateless_http=True,
               transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False))
@@ -26,6 +27,14 @@ def _need(ctx):
 
 
 @mcp.tool()
+def kb_onboarding(role: str = "") -> list:
+    """查看角色上手问题清单。role=dev/qa/product/ops，留空返回全部角色。
+    与首页共用清单；只提供问题引导，不授予角色权限，也不是已验证的操作答案。
+    先用 kb_search 查资料，再按需用 kb_ask 提问，并把角色填入 audience。"""
+    return onboarding.get_guides(role)
+
+
+@mcp.tool()
 def kb_search(query: str, ctx: Context) -> list:
     """检索卡序问答库已发布资料，返回 id / 标题 / 标签 / 摘要。"""
     return store.search_entries(query, store.visible_scopes(_user(ctx)), limit=10)
@@ -40,7 +49,8 @@ def kb_get(entry_id: str, ctx: Context) -> str:
 
 @mcp.tool()
 def kb_ask(question: str, ctx: Context, page: str = "", intent: str = "", audience: str = "") -> dict:
-    """提交一个问题（跳过网页追问，直接排队作答）。page=涉及的页面/功能，intent=想知道什么，audience=给谁看。
+    """提交一个问题（跳过网页追问，直接排队作答）。page=页面/功能或上手主题，intent=想完成什么，audience=给谁看/提问角色。
+    新人上手可先用 kb_onboarding 查看引导；未知上下文留空，不猜测权限、账号或负责人。
     返回 question_id，用 kb_status 取答案（一般 1–3 分钟）。"""
     u = _need(ctx)
     with store.db() as c:
