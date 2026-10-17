@@ -1,7 +1,7 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}卡序问答库{% endblock %}</title>
-<link rel="stylesheet" href="/static/app.css?v=shared-shell-20261016"></head><body>
+<link rel="stylesheet" href="/static/app.css?v=question-first-49"></head><body>
 {% set path = request.url.path if request is defined else '/' %}
 {% set section = '资料库' if path.startswith('/kb') else '我的提问' if path.startswith('/mine') else '帮助' if path.startswith('/help') else '管理' if path.startswith('/admin') else '登录' if path.startswith('/login') else '问题详情' if path.startswith('/q/') else '知识库首页' %}
 <div class="kb-app">

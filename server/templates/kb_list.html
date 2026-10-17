@@ -1,13 +1,14 @@
 {% extends "base.html" %}{% block title %}资料库 · 卡序问答库{% endblock %}{% block body %}
 <div class="card">
   <h1>资料库</h1>
-  <form method="get" action="/kb" class="row"><input type="text" name="q" value="{{ q }}" placeholder="搜关键词，比如 参考价 / 发货时限" style="flex:1"><button class="btn">搜索</button></form>
+  <p class="sub">这里仅查找已记录的资料，搜索不会提交新问题。</p>
+  <form method="get" action="/kb" class="row library-search"><label class="home-search-label" for="library-query">搜索资料</label><input id="library-query" type="text" name="q" value="{{ q }}" placeholder="输入关键词查找已有资料" style="flex:1"><button class="btn">搜索资料</button></form>
   {% if tags %}<p style="margin:10px 0 0">{% for t in tags %}<a class="pill {{ 'ok' if t==tag }}" href="/kb?tag={{ t|urlencode }}">{{ t }}</a>{% endfor %}{% if tag %}<a class="pill" href="/kb">全部</a>{% endif %}</p>{% endif %}
 </div>
 <div class="card sugg">
   {% for e in items %}<a href="/kb/{{ e.id }}"><b>{{ e.title }}</b> <span class="sub">{{ e.id }}</span>{% for t in e.tags %} <span class="pill">{{ t }}</span>{% endfor %}
     {% if e.snippet %}<br><span class="sub">{{ e.snippet }}</span>{% endif %}</a>
-  {% else %}<p class="sub">没有找到。{% if q %}可以<a href="/">直接提问</a>。{% endif %}</p>{% endfor %}
+  {% else %}<p class="sub">没有找到相关资料。{% if q %}<a href="/?draft={{ q|urlencode }}#askf">没找到？去提问</a>，将带入搜索文字，由你确认后提交。{% endif %}</p>{% endfor %}
 </div>
 <p class="sub"><a href="/export.zip">下载全部（.md 压缩包）</a> · <a href="/llms.txt">llms.txt</a></p>
 {% endblock %}

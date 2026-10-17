@@ -1,21 +1,27 @@
 {% extends "base.html" %}{% block body %}
-<section class="home-intro">
+<section class="card ask-card" aria-labelledby="ask-title">
   <p class="home-eyebrow">CARDORDER · 团队知识库</p>
-  <h1>找到你的上手指南</h1>
-  <p class="sub">从你的角色出发，了解工具、流程，以及第一件工作怎么完成。</p>
-  <form class="home-search row" action="/kb" method="get" role="search">
-    <label class="home-search-label" for="kb-search">搜索资料</label>
-    <input type="text" id="kb-search" name="q" placeholder="搜索问题、关键词或操作步骤…">
-    <button class="btn" type="submit">搜索</button>
+  <h1 id="ask-title">有什么想问的？</h1>
+  <p class="sub ask-description">写下问题，提交后由问答助手作答。问答自动留档，团队成员也能接着问。</p>
+  <form method="post" action="/ask" enctype="multipart/form-data" id="askf">
+    <label class="ask-label" for="text">你的问题</label>
+    <textarea name="text" id="text" maxlength="2000" rows="3" required placeholder="例如：当日发货的订单，15:45 付款最晚什么时候发？">{{ draft }}</textarea>
+    <div class="ask-actions">
+      <label class="ask-upload" for="images">附截图（最多 3 张）<input id="images" type="file" name="images" accept="image/png,image/jpeg" multiple></label>
+      <button class="btn ask-submit" type="submit">提交问题</button>
+    </div>
   </form>
+  <p class="sub ask-search">想先查已有答案？<a href="/kb" target="_blank" rel="noopener">搜索已有资料 ↗</a></p>
+  {% if not worker_online %}<p class="notice">作答电脑暂时离线：问题提交后会排队，开机后自动处理，不会丢。</p>{% endif %}
+  <div class="sugg related-entries" id="sugg" aria-live="polite"></div>
 </section>
 
 <section class="card" aria-labelledby="role-heading">
-  <h2 id="role-heading">你的角色是？</h2>
-  <p class="sub">选择角色，查看新人最先需要弄清楚的问题。兼任多个角色时，可以分别查看。</p>
+  <h2 id="role-heading">不知道怎么问？参考角色示例</h2>
+  <p class="sub">展开查看，点击示例可填入上方提问框，确认后再提交。</p>
   <div class="role-grid">
   {% for role in roles %}
-    <details class="role-guide"{% if loop.first %} open{% endif %}>
+    <details class="role-guide">
       <summary><span>{{ role.name }}</span><span class="sub">{{ role.goal }}</span></summary>
       <ol>{% for question in role.questions %}<li><button type="button" class="role-question" data-question="{{ question }}">{{ question }}</button></li>{% endfor %}</ol>
     </details>
@@ -23,24 +29,11 @@
   </div>
   <p class="sub">上手路径：认识职责 → 取得权限 → 准备工具 → 完成第一件工作 → 知道向谁求助</p>
 </section>
-<div class="card">
-  <h2>还有什么想问的？</h2>
-  <p class="sub">用你自己的话写，不用很专业。可以附截图（最多 3 张）。问题和提问人会自动收录到资料库，所有成员都能查看和接着问。</p>
-  <form method="post" action="/ask" enctype="multipart/form-data" id="askf">
-    <textarea name="text" id="text" maxlength="2000" required placeholder="例如：商品详情里的市场参考价，切换 30 天、90 天会变吗？"></textarea>
-    <div class="sugg" id="sugg"></div>
-    <div class="row" style="margin-top:10px">
-      <input type="file" name="images" accept="image/png,image/jpeg" multiple>
-      <button class="btn" style="margin-left:auto">提问</button>
-    </div>
-  </form>
-  {% if not worker_online %}<p class="notice">作答电脑暂时离线：问题会先排队，开机后自动处理，不会丢。</p>{% endif %}
-</div>
 {% if recent %}<div class="card"><h2>最近的资料</h2>
   <div class="sugg">{% for e in recent %}<a href="/kb/{{ e.id }}">{{ e.title }}{% for t in e.tags %} <span class="pill">{{ t }}</span>{% endfor %}</a>{% endfor %}</div>
   <p><a href="/kb">全部资料 ›</a></p></div>{% endif %}
 <script>
-const t=document.getElementById('text'),s=document.getElementById('sugg');let timer;
+const t=document.getElementById('text'),s=document.getElementById('sugg');let timer,searchController,searchVersion=0;
 document.querySelectorAll('.role-question').forEach(button=>button.addEventListener('click',()=>{
   if(t.value.trim() && t.value.trim()!==button.dataset.question){
     if(!window.confirm('用这个上手问题替换当前尚未提交的提问？'))return;
@@ -50,10 +43,28 @@ document.querySelectorAll('.role-question').forEach(button=>button.addEventListe
   t.focus();
   t.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'});
 }));
-t.addEventListener('input',()=>{clearTimeout(timer);timer=setTimeout(async()=>{
-  const q=t.value.trim(); if(q.length<2){s.innerHTML='';return}
-  try{const r=await fetch('/api/entries/search?q='+encodeURIComponent(q));const d=await r.json();
-    s.innerHTML=d.length?'<p class="sub" style="margin:10px 0 0">可能是你要找的：</p>'+d.map(e=>{const a=document.createElement('a');a.href='/kb/'+e.id;a.textContent=e.title;return a.outerHTML}).join(''):'';
-  }catch(e){}},400)});
+t.addEventListener('input',()=>{
+  clearTimeout(timer);if(searchController)searchController.abort();
+  const version=++searchVersion,q=t.value.trim();s.replaceChildren();
+  if(q.length<2)return;
+  timer=setTimeout(async()=>{
+    searchController=new AbortController();
+    try{
+      const response=await fetch('/api/entries/search?q='+encodeURIComponent(q),{signal:searchController.signal});
+      if(!response.ok)return;
+      const entries=await response.json();
+      if(version!==searchVersion||!Array.isArray(entries)||!entries.length)return;
+      const intro=document.createElement('p');intro.className='sub';
+      intro.textContent='已有相关资料，可先查看，也可以直接提交问题。';s.append(intro);
+      for(const entry of entries.slice(0,3)){
+        const a=document.createElement('a');a.href='/kb/'+encodeURIComponent(entry.id);a.textContent=entry.title;
+        a.target='_blank';a.rel='noopener';s.append(a);
+      }
+      const more=document.createElement('a');more.href='/kb?q='+encodeURIComponent(q);
+      more.textContent='查看相关资料 ↗';more.className='sub';more.target='_blank';more.rel='noopener';s.append(more);
+    }catch(error){/* Recommendations are optional; the question form stays available. */}
+  },400);
+});
+if(t.value.trim())t.dispatchEvent(new Event('input'));
 </script>
 {% endblock %}

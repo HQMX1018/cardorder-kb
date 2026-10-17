@@ -100,9 +100,10 @@ def logout():
 
 # ── 提问 ──
 @router.get("/", response_class=HTMLResponse)
-def home(request: Request):
+def home(request: Request, draft: str = ""):
     u = current_user(request)
-    return page(request, "home.html", roles=onboarding.get_guides(), recent=store.list_entries(store.visible_scopes(u), limit=8))
+    return page(request, "home.html", roles=onboarding.get_guides(), draft=draft[:MAX_TEXT],
+                recent=store.list_entries(store.visible_scopes(u), limit=8))
 
 
 def _check_image(data: bytes):
