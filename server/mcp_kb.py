@@ -69,10 +69,11 @@ def kb_status(question_id: str, ctx: Context) -> dict:
     """查问题进度；已答时返回小白版、专业版、证据与不一致项。"""
     u = _need(ctx)
     v = kb_queue.question_view(question_id)
-    if not v or (v["q"]["asker"] != u["userid"] and not u["is_admin"]):
+    if not v:
         raise ValueError("没有这个问题")
     out = {"status": v["q"]["status"], "queue_ahead": v["queue_ahead"], "worker_online": v["worker_online"],
-           "entry_id": v["q"]["entry_id"]}
+           "entry_id": v["q"]["entry_id"], "asker": v['q']['asker'],
+           "question": v['q']['raw_text'], "created_at": v['q']['created_at'], "messages": v['messages']}
     if v["answers"]:
         a = v["answers"][-1]
         out.update(plain=a["plain_md"], detail=a["detail_md"], evidence=a["evidence"], mismatches=a["mismatches"],
@@ -91,6 +92,13 @@ def kb_feedback(question_id: str, verdict: str, ctx: Context, note: str = "") ->
         kb_queue.follow_up(u, question_id, note.strip())
         return "已按你的补充重新排队作答"
     return "已记录"
+
+
+@mcp.tool()
+def kb_followup(question_id: str, question: str, ctx: Context) -> dict:
+    """在任一成员的问题下继续提问，保留原线程上下文和每轮提问人。"""
+    kb_queue.follow_up(_need(ctx), question_id, question)
+    return {'question_id': question_id, 'url': '/q/' + question_id, 'status': '排队'}
 
 
 @mcp.tool()

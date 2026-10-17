@@ -1,15 +1,25 @@
 {% extends "base.html" %}{% set q = v.q %}{% block body %}
 <div class="card">
-  <p class="sub">你的问题 · <span class="pill">{{ q.status }}</span></p>
+  <p class="sub">提问人：{{ q.asker or '未知历史作者' }} · {{ q.created_at|timestamp }} · <span class="pill">{{ q.status }}</span></p>
   <p style="white-space:pre-wrap;margin:6px 0">{{ q.raw_text }}</p>
   {% for n in q.images %}<img class="shot" src="/upload/{{ q.id }}/{{ n }}" alt="截图">{% endfor %}
 </div>
+
+{% if v.messages|length > 1 %}
+<div class="card"><h2>完整问答记录</h2>
+{% for message in v.messages %}
+<section class="ev"><p class="sub">{{ '提问' if message.role == 'user' else '回答' }} · {{ message.author }} · {{ message.at|timestamp }}</p>
+{{ message.text|md }}
+{% if message.legacy %}<p class="notice">由历史审计恢复，内容可能截断，原轮次关联无法确认。</p>{% endif %}
+{% if message.needs_review %}<p class="notice">回答尚需审核，请勿视作已确认结论。</p>{% endif %}
+</section>{% endfor %}</div>
+{% endif %}
 
 {% if q.status in pending %}
 <div class="card"><p><span class="spin"></span>
   {% if q.status == '追问生成中' %}正在帮你把问题补充完整…{% elif q.status == '排队' %}排队中{% if v.queue_ahead %}，前面还有 {{ v.queue_ahead }} 个{% endif %}…{% else %}正在查项目作答，一般 1–3 分钟…{% endif %}</p>
   {% if not v.worker_online %}<p class="notice">作答电脑暂时离线，开机后自动处理，题目不会丢。</p>{% endif %}
-  {% if q.status == '追问生成中' %}<form method="post" action="/q/{{ q.id }}/skip"><button class="btn ghost small">不等了，直接提问</button></form>{% endif %}
+  {% if q.status == '追问生成中' and q.asker == user.userid %}<form method="post" action="/q/{{ q.id }}/skip"><button class="btn ghost small">不等了，直接提问</button></form>{% endif %}
 </div>
 <script>
 (function poll(){setTimeout(async()=>{try{const r=await fetch('/api/q/{{ q.id }}/state');const d=await r.json();
@@ -17,13 +27,13 @@
 </script>
 {% endif %}
 
-{% if q.status == '命中资料' and hit %}
+{% if q.status == '命中资料' and hit and q.asker == user.userid %}
 <div class="card"><h2>资料库里可能已经有答案</h2>
   <p><a href="/kb/{{ hit.id }}">{{ hit.title }} ›</a></p>
   <form method="post" action="/q/{{ q.id }}/skip"><button class="btn ghost">不是我要的，继续提问</button></form></div>
 {% endif %}
 
-{% if q.status == '追问中' and q.clarify %}
+{% if q.status == '追问中' and q.clarify and q.asker == user.userid %}
 <div class="card"><h2>帮我们把问题问清楚</h2>
   <p class="sub">点选就行；都不合适就在「其他」里写。{% if q.clarify.template %}（作答电脑离线，先用通用问题）{% endif %}</p>
   <form method="post" action="/q/{{ q.id }}/clarify">
@@ -56,9 +66,9 @@
     {{ a.detail_md | md }}
     {% for e in a.evidence %}<div class="ev"><code>{{ e.file }}:{{ e.line }}</code><br>{{ e.quote }}</div>{% endfor %}
     <p class="sub">依据代码版本 {{ a.commit_sha }}</p></details>
-  {% if a.needs_review %}<p class="notice">这条回答{% if not a.evidence %}没有可核实的依据{% else %}命中了敏感信息过滤{% endif %}，需要管理员审核后才能收入资料库。</p>{% endif %}
+  {% if a.needs_review %}<p class="notice">这条回答{% if not a.evidence %}没有可核实的依据{% else %}命中了敏感信息过滤{% endif %}，已作为问答记录收录，但仍需审核，不能视作已确认结论。</p>{% endif %}
 </div>
-{% if q.asker == user.userid and q.status not in pending %}
+{% if q.status not in pending %}
 <div class="card"><h2>这个回答怎么样？</h2>
   <div class="row">
     <form method="post" action="/q/{{ q.id }}/feedback"><input type="hidden" name="verdict" value="useful"><button class="btn">有用{% if not q.entry_id and not a.needs_review %}，收入资料库{% endif %}</button></form>
@@ -68,10 +78,15 @@
   <form method="post" action="/q/{{ q.id }}/feedback" style="margin-top:12px"><input type="hidden" name="verdict" value="wrong">
     <input type="text" name="note" required maxlength="1000" placeholder="答错了？写一句哪里不对"> <button class="btn ghost small" style="margin-top:6px">答错了</button></form>
 </div>{% endif %}
-{% if user.is_admin and not q.entry_id %}<form method="post" action="/q/{{ q.id }}/publish"><button class="btn ghost small">管理员：审核通过并收入资料库</button></form>{% endif %}
+{% if user.is_admin and a.needs_review %}<form method="post" action="/q/{{ q.id }}/publish"><button class="btn ghost small">管理员：审核此回答</button></form>{% endif %}
 {% else %}
 <details class="card"><summary>第 {{ a.version }} 版回答</summary>{{ a.plain_md | md }}</details>
 {% endif %}{% endfor %}
 
 {% if q.status == '失败' %}<div class="card"><p class="notice">这次没能答出来（重试了 3 次）。可以换个说法再问一次。</p></div>{% endif %}
+{% if q.status in ['已答','证据不足','已发布','失败','追问中','命中资料'] %}
+<div class="card"><h2>在这个问题下继续提问</h2><p class="sub">所有登录成员都可以参与，追问与回答会自动收录到同一条资料记录。</p>
+<form method="post" action="/q/{{ q.id }}/followup"><textarea name="text" required maxlength="1000" rows="3" placeholder="写下你的追问"></textarea><button class="btn">继续提问</button></form></div>
+{% elif q.status in pending %}<p class="sub">本轮正在处理，完成后可继续追问。</p>{% endif %}
+{% if q.entry_id %}<p><a href="/kb/{{ q.entry_id }}">查看资料库中的完整记录</a></p>{% endif %}
 {% endblock %}

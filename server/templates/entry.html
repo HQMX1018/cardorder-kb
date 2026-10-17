@@ -7,5 +7,5 @@
   {{ e.body | md }}
   {% if e.meta.source_commit %}<p class="sub">依据代码版本 {{ e.meta.source_commit }}</p>{% endif %}
 </div>
-<p class="sub">还有疑问？<a href="/">继续提问</a></p>
+<p class="sub">还有疑问？{% if e.source_question %}<a href="/q/{{ e.source_question }}">回到这个问题继续提问</a>{% else %}<a href="/">继续提问</a>{% endif %}</p>
 {% endblock %}

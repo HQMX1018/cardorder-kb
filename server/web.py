@@ -1,5 +1,6 @@
 """网页：登录 / 提问 / 追问 / 答案 / 资料库 / 我的 / 帮助 / 管理。L0 入口过滤在这里。"""
 import html
+import datetime
 import io
 import json
 import re
@@ -53,6 +54,8 @@ def md_lite(text):
 
 
 T.env.filters["md"] = md_lite
+T.env.filters['timestamp'] = lambda value: datetime.datetime.fromtimestamp(
+    value, datetime.timezone.utc).astimezone(datetime.timezone(datetime.timedelta(hours=8))).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def current_user(request: Request):
@@ -143,7 +146,7 @@ async def ask(request: Request, text: str = Form(...), images: List[UploadFile] 
 def question(request: Request, qid: str):
     u = need_user(request)
     v = kb_queue.question_view(qid)
-    if not v or (v["q"]["asker"] != u["userid"] and not u["is_admin"]):
+    if not v:
         raise HTTPException(404, "没有这个问题")
     hit = store.get_entry(v["q"]["hit_entry"], store.visible_scopes(u)) if v["q"]["hit_entry"] else None
     return page(request, "question.html", v=v, hit=hit, pending=kb_queue.PENDING)
@@ -153,7 +156,7 @@ def question(request: Request, qid: str):
 def upload(request: Request, qid: str, name: str):
     u = need_user(request)
     v = kb_queue.question_view(qid)
-    if not v or (v["q"]["asker"] != u["userid"] and not u["is_admin"]) or name not in v["q"]["images"]:
+    if not v or name not in v["q"]["images"]:
         raise HTTPException(404)
     return FileResponse(store.UPLOADS / qid / name)
 
@@ -204,6 +207,12 @@ def feedback(request: Request, qid: str, verdict: str = Form(...), note: str = F
     return RedirectResponse(f"/q/{qid}", status_code=303)
 
 
+@router.post('/q/{qid}/followup')
+def shared_followup(request: Request, qid: str, text: str = Form(...)):
+    kb_queue.follow_up(need_user(request), qid, text)
+    return RedirectResponse(f'/q/{qid}', status_code=303)
+
+
 @router.post("/q/{qid}/publish")
 def publish(request: Request, qid: str):
     eid = kb_queue.publish(need_user(request), qid, force=True)
@@ -215,8 +224,9 @@ def mine(request: Request):
     u = need_user(request)
     with db() as c:
         rows = [dict(r) for r in c.execute(
-            "SELECT id, raw_text, status, created_at, entry_id FROM questions WHERE asker=? ORDER BY created_at DESC LIMIT 100",
-            (u["userid"],))]
+            "SELECT id, raw_text, status, created_at, entry_id FROM questions WHERE asker=? OR id IN "
+            "(SELECT question_id FROM question_turns WHERE asker=?) ORDER BY created_at DESC LIMIT 100",
+            (u["userid"], u['userid']))]
     return page(request, "mine.html", rows=rows)
 
 
@@ -286,7 +296,7 @@ def admin(request: Request, msg: str = ""):
     with db() as c:
         review = [dict(r) for r in c.execute(
             "SELECT q.id, q.raw_text, q.asker, a.version, a.confidence FROM questions q JOIN answers a ON a.question_id=q.id "
-            "WHERE a.needs_review=1 AND q.entry_id IS NULL AND a.version=(SELECT MAX(version) FROM answers WHERE question_id=q.id) "
+            "WHERE a.needs_review=1 AND a.version=(SELECT MAX(version) FROM answers WHERE question_id=q.id) "
             "ORDER BY a.created_at DESC LIMIT 50")]
         logs = [dict(r) for r in c.execute("SELECT * FROM audit_log ORDER BY at DESC LIMIT 100")]
         jobs = [dict(r) for r in c.execute("SELECT id, question_id, kind, state, attempts, worker, error, created_at "

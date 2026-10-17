@@ -13,7 +13,9 @@
 <li>「依据（给开发看）」里是代码出处，转给开发时直接发这个页面的链接。</li>
 <li>没看懂：写下哪里没懂，点「没懂，继续问」，会出新一版回答。</li>
 <li>答错了：写一句哪里不对，点「答错了」。</li>
-<li>觉得有用就点「有用」，这条回答会收进资料库，下次别人问到能直接看到。</li></ul>
+<li>所有问题和后续问答默认收入资料库，并保留每轮提问人、时间和回答。你也可以点「有用」反馈。</li>
+<li>在资料库打开别人提出的问题，点「回到这个问题继续提问」，即可在同一线程接着问。本轮作答结束后可提交下一轮。</li>
+<li>自动收录只是留档；标有「需审核」的回答仍不能视为已确认结论。</li></ul>
 <h3>常见问题</h3><ul>
 <li><b>打不开？</b>先确认连的是公司网络，在家打不开是正常的。</li>
 <li><b>一直「排队中」？</b>右上角「作答离线」说明作答电脑没开，开机后会自动处理，题目不会丢。</li>
@@ -22,6 +24,6 @@
 <h3>开发者：用 MCP 接入</h3>
 <p>Claude Code：</p><p><code>claude mcp add --transport http cardorder-kb http://192.168.31.145:8090/mcp/ --header "X-KB-Uid: 你的用户名"</code></p>
 <p>Codex（~/.codex/config.toml）：</p><p><code>[mcp_servers.cardorder-kb] url = "http://192.168.31.145:8090/mcp/"  http_headers = { "X-KB-Uid" = "你的用户名" }</code></p>
-<p>工具：kb_onboarding / kb_search / kb_get / kb_ask / kb_status / kb_feedback / kb_publish。资料目录：<a href="/llms.txt">/llms.txt</a>。</p>
+<p>工具：kb_onboarding / kb_search / kb_get / kb_ask / kb_status / kb_followup / kb_feedback / kb_publish。资料目录：<a href="/llms.txt">/llms.txt</a>。</p>
 <p>新人上手：先调用 kb_onboarding（role 可选 dev / qa / product / ops；省略返回全部角色），再用 kb_search 查资料；需要作答时调用 kb_ask，将角色放入 audience、上手主题放入 page。上手清单是问题引导，不是已验证答案或权限授权。</p>
 </div>{% endblock %}

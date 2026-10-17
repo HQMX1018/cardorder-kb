@@ -57,6 +57,7 @@ def create_question(user, text, images=(), source="web", card=None, qid=None):
     """新问题。card 给了（MCP 直接提问）就跳过追问直接作答。"""
     qid = qid or new_id()
     with db() as c:
+        c.execute('BEGIN IMMEDIATE')
         c.execute("INSERT INTO questions(id,asker,raw_text,images_json,scope,status,created_at,source) VALUES(?,?,?,?,?,?,?,?)",
                   (qid, user["userid"], text, json.dumps(list(images)), user["scope"], "排队", time.time(), source))
         q = c.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
@@ -71,12 +72,18 @@ def create_question(user, text, images=(), source="web", card=None, qid=None):
             c.execute("UPDATE questions SET status='追问中', clarify_json=? WHERE id=?",
                       (json.dumps(TEMPLATE_CLARIFY, ensure_ascii=False), qid))
         audit(c, user["userid"], "ask", qid, text[:200])
+        c.execute('INSERT INTO question_turns VALUES(?,?,?,?,?,0)',
+                  (qid, 0, user['userid'], text, q['created_at']))
+        store.sync_question_entry(c, qid)
+        c.commit()
+    WAKE.set()
     return qid
 
 
 def submit_clarify(user, qid, picks):
     """picks: [{q, answer}]。合成问题卡并入队作答。"""
     with db() as c:
+        c.execute('BEGIN IMMEDIATE')
         q = c.execute("SELECT * FROM questions WHERE id=? AND asker=?", (qid, user["userid"])).fetchone()
         if not q or q["status"] not in ("追问中", "命中资料", "追问生成中"):
             raise HTTPException(409, "当前状态不能提交")
@@ -88,22 +95,40 @@ def submit_clarify(user, qid, picks):
         c.execute("UPDATE jobs SET state='failed', error='skipped' WHERE question_id=? AND kind='clarify' AND state='queued'", (qid,))
         enqueue(c, qid, "answer", _payload(q, card))
         audit(c, user["userid"], "clarify", qid, json.dumps(picks, ensure_ascii=False)[:500])
+        store.sync_question_entry(c, qid)
+        c.commit()
+    WAKE.set()
 
 
 def follow_up(user, qid, text):
-    """「没懂，继续问」：带上一版答案重新作答。"""
+    """Any logged-in member can continue the same thread, preserving all authors."""
+    text = text.strip()
+    if not text or len(text) > 1000:
+        raise HTTPException(400, "追问须为1至1000字")
     with db() as c:
-        q = c.execute("SELECT * FROM questions WHERE id=? AND asker=?", (qid, user["userid"])).fetchone()
-        if not q or q["status"] not in ("已答", "证据不足", "已发布", "失败"):
+        c.execute('BEGIN IMMEDIATE')
+        q = c.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
+        if not q or q["status"] not in ("已答", "证据不足", "已发布", "失败", "追问中", "命中资料"):
             raise HTTPException(409, "当前状态不能追问")
         prev = c.execute("SELECT plain_md FROM answers WHERE question_id=? ORDER BY version DESC LIMIT 1", (qid,)).fetchone()
         card = json.loads(q["card_json"] or "null") or {"raw_text": q["raw_text"]}
         card["previous_answer"] = prev[0] if prev else ""
-        card["followup"] = text[:1000]
-        c.execute("UPDATE questions SET card_json=?, status='排队', round=round+1 WHERE id=?",
-                  (json.dumps(card, ensure_ascii=False), qid))
-        enqueue(c, qid, "answer", _payload(q, card))
-        audit(c, user["userid"], "followup", qid, text[:200])
+        card["followup"] = text
+        now = time.time()
+        turn_round = max(q['round'], c.execute(
+            'SELECT COALESCE(MAX(round),0) FROM question_turns WHERE question_id=?', (qid,)).fetchone()[0]) + 1
+        c.execute('INSERT INTO question_turns VALUES(?,?,?,?,?,0)',
+                  (qid, turn_round, user['userid'], text, now))
+        card['thread'] = store.thread_messages(c, qid)
+        card['followup_author'] = user['userid']
+        c.execute("UPDATE questions SET card_json=?, status='排队', round=? WHERE id=?",
+                  (json.dumps(card, ensure_ascii=False), turn_round, qid))
+        c.execute("UPDATE jobs SET state='failed', error='shared follow-up' WHERE question_id=? AND kind='clarify' AND state='queued'", (qid,))
+        enqueue(c, qid, "answer", {**_payload(q, card), 'turn_round': turn_round})
+        audit(c, user["userid"], "followup_recorded", qid, text)
+        store.sync_question_entry(c, qid)
+        c.commit()
+    WAKE.set()
 
 
 CLARIFY_WAIT = 30   # 追问任务排队超过这么久还没被领走（或作答电脑离线）→ 换模板题，不让用户干等
@@ -133,6 +158,7 @@ def question_view(qid):
         ahead = c.execute("SELECT COUNT(*) FROM jobs WHERE state IN ('queued','leased') AND created_at<?",
                           (mine,)).fetchone()[0] if mine else 0
         online = worker_online(c)
+        messages = store.thread_messages(c, qid)
     for a in ans:
         for k in ("evidence_json", "dropped_json", "mismatches_json"):
             a[k[:-5]] = json.loads(a.pop(k) or "[]")
@@ -140,7 +166,7 @@ def question_view(qid):
     q["card"] = json.loads(q.pop("card_json") or "null")
     q["clarify"] = json.loads(q.pop("clarify_json") or "null")
     q["images"] = json.loads(q.pop("images_json") or "[]")
-    return {"q": q, "answers": ans, "queue_ahead": ahead, "worker_online": online}
+    return {"q": q, "answers": ans, "messages": messages, "queue_ahead": ahead, "worker_online": online}
 
 
 # ── worker 接口 ──
@@ -155,6 +181,7 @@ def _on_fail(c, qid, kind):
                   (json.dumps(TEMPLATE_CLARIFY, ensure_ascii=False), qid))
     else:
         c.execute("UPDATE questions SET status='失败' WHERE id=?", (qid,))
+    store.sync_question_entry(c, qid)
 
 
 def _reap(c):
@@ -176,6 +203,7 @@ def _claim(c, worker):
         (worker, now, LEASE["clarify"], LEASE["answer"])).fetchone()
     if row and row["kind"] == "answer":
         c.execute("UPDATE questions SET status='作答中' WHERE id=?", (row["question_id"],))
+        store.sync_question_entry(c, row['question_id'])
     return dict(row) if row else None
 
 
@@ -215,6 +243,7 @@ async def worker_result(job_id: str, request: Request, worker: str = "w1", x_kb_
     _auth(x_kb_worker)
     body = await request.json()
     with db() as c:
+        c.execute('BEGIN IMMEDIATE')
         job = c.execute("SELECT * FROM jobs WHERE id=? AND state='leased' AND worker=?", (job_id, worker)).fetchone()
         if not job:
             raise HTTPException(409, "lease lost")
@@ -226,6 +255,8 @@ async def worker_result(job_id: str, request: Request, worker: str = "w1", x_kb_
             if failed:
                 _on_fail(c, qid, job["kind"])
             audit(c, worker, "error:" + job["kind"], qid, body["error"])
+            c.commit()
+            WAKE.set()
             return {"ok": True}
         res = body["result"]
         if job["kind"] == "answer":
@@ -237,10 +268,12 @@ async def worker_result(job_id: str, request: Request, worker: str = "w1", x_kb_
             mism = [redact(m)[0] for m in res.get("mismatches", [])]
             needs_review = int(bool(h1 or h2) or not kept)
             ver = c.execute("SELECT COALESCE(MAX(version),0)+1 FROM answers WHERE question_id=?", (qid,)).fetchone()[0]
-            c.execute("INSERT INTO answers VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            c.execute("INSERT INTO answers(question_id,version,plain_md,detail_md,evidence_json,dropped_json,"
+                      "mismatches_json,confidence,commit_sha,needs_review,created_at,turn_round) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                       (qid, ver, plain, detail, json.dumps(kept, ensure_ascii=False),
                        json.dumps(body.get("dropped", []), ensure_ascii=False), json.dumps(mism, ensure_ascii=False),
-                       res.get("confidence"), body.get("commit"), needs_review, time.time()))
+                       res.get("confidence"), body.get("commit"), needs_review, time.time(),
+                       json.loads(job['payload']).get('turn_round', 0)))
             c.execute("UPDATE questions SET status=? WHERE id=?", ("已答" if kept else "证据不足", qid))
         else:
             q = c.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
@@ -260,6 +293,8 @@ async def worker_result(job_id: str, request: Request, worker: str = "w1", x_kb_
                           (json.dumps(res, ensure_ascii=False), qid))
         c.execute("UPDATE jobs SET state='done', result=? WHERE id=?", (json.dumps(res, ensure_ascii=False), job_id))
         audit(c, worker, "result:" + job["kind"], qid, json.dumps(body.get("dropped", []), ensure_ascii=False)[:500])
+        store.sync_question_entry(c, qid)
+        c.commit()
     WAKE.set()                        # 本机空出一个作答位，排着的题可以推了
     return {"ok": True}
 
@@ -276,7 +311,9 @@ def worker_upload(qid: str, name: str, x_kb_worker: str = Header("")):
 @router.get("/api/worker/entries/search")
 def worker_entries_search(q: str, x_kb_worker: str = Header("")):
     _auth(x_kb_worker)
-    return store.search_entries(q, ("public", "internal"), limit=8)
+    # Pending/unreviewed question logs are discoverable to people, not evidence for the AI.
+    return [item for item in store.search_entries(q, ("public", "internal"), limit=50)
+            if not item['id'].startswith('Q-')][:8]
 
 
 @router.get("/api/worker/bugs/search", response_class=PlainTextResponse)
@@ -413,12 +450,19 @@ def publish(user, qid, force=False):
     if not view or not view["answers"]:
         raise HTTPException(404, "没有可发布的答案")
     q, a = view["q"], view["answers"][-1]
-    if q["entry_id"]:
-        return q["entry_id"]
     if q["asker"] != user["userid"] and not user.get("is_admin"):
         raise HTTPException(403, "只有提问人或管理员能发布")
     if (a["needs_review"] or not a["evidence"]) and not (force and user.get("is_admin")):
         raise HTTPException(409, "这条答案需要管理员审核后才能发布")
+    if q['entry_id']:
+        with db() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if force and user.get('is_admin'):
+                c.execute('UPDATE answers SET needs_review=0 WHERE question_id=? AND version=?', (qid, a['version']))
+            store.sync_question_entry(c, qid)
+            audit(c, user['userid'], 'review_archive', qid)
+            c.commit()
+        return q['entry_id']
     card = q["card"] or {}
     title = (card.get("summary") or q["raw_text"]).strip().replace("\n", " ")[:60]
     tags = [t for t in [card.get("page", "")] if t]
@@ -442,6 +486,8 @@ def publish(user, qid, force=False):
 
 def record_feedback(user, qid, verdict, note=""):
     with db() as c:
+        if not c.execute('SELECT 1 FROM questions WHERE id=?', (qid,)).fetchone():
+            raise HTTPException(404, '没有这个问题')
         v = c.execute("SELECT MAX(version) FROM answers WHERE question_id=?", (qid,)).fetchone()[0]
         c.execute("INSERT INTO feedback VALUES(?,?,?,?,?,?)", (qid, v, user["userid"], verdict, note[:1000], time.time()))
         audit(c, user["userid"], "feedback:" + verdict, qid, note[:200])

@@ -43,6 +43,10 @@ CREATE TABLE IF NOT EXISTS entries(
 CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(id UNINDEXED, title, body, tags, tokenize='trigram');
 CREATE TABLE IF NOT EXISTS workers(name TEXT PRIMARY KEY, last_seen REAL);
 CREATE TABLE IF NOT EXISTS audit_log(at REAL, actor TEXT, action TEXT, target TEXT, detail TEXT);
+CREATE TABLE IF NOT EXISTS question_turns(
+  question_id TEXT NOT NULL, round INTEGER NOT NULL, asker TEXT NOT NULL,
+  text TEXT NOT NULL, created_at REAL NOT NULL, legacy INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(question_id, round));
 """
 
 
@@ -63,7 +67,25 @@ def init():
         d.mkdir(parents=True, exist_ok=True)
     with db() as c:
         c.executescript(SCHEMA)
+        if 'turn_round' not in {r['name'] for r in c.execute('PRAGMA table_info(answers)')}:
+            c.execute('ALTER TABLE answers ADD COLUMN turn_round INTEGER')
     reindex()
+    with db() as c:
+        c.execute('BEGIN IMMEDIATE')
+        for q in c.execute('SELECT * FROM questions').fetchall():
+            c.execute('INSERT OR IGNORE INTO question_turns VALUES(?,?,?,?,?,0)',
+                      (q['id'], 0, q['asker'], q['raw_text'], q['created_at']))
+            # Old follow-ups only survive as truncated audit entries. Preserve them as such.
+            old = c.execute("SELECT * FROM audit_log WHERE target=? AND action='followup' ORDER BY at,rowid",
+                            (q['id'],)).fetchall()
+            for index, event in enumerate(old, 1):
+                if c.execute('SELECT 1 FROM question_turns WHERE question_id=? AND created_at=?',
+                             (q['id'], event['at'])).fetchone():
+                    continue
+                c.execute('INSERT OR IGNORE INTO question_turns VALUES(?,?,?,?,?,1)',
+                          (q['id'], index, event['actor'] or '未知历史作者', event['detail'], event['at']))
+            sync_question_entry(c, q['id'])
+        c.commit()
 
 
 def new_id():
@@ -188,6 +210,57 @@ def save_entry(meta, body):
     with db() as c:
         _index_one(c, path)
     return path
+
+
+def thread_messages(c, qid):
+    messages = [dict(role='user', author=r['asker'], text=r['text'], at=r['created_at'],
+                     round=r['round'], legacy=bool(r['legacy'])) for r in c.execute(
+                         'SELECT * FROM question_turns WHERE question_id=? ORDER BY round', (qid,))]
+    for row in c.execute('SELECT * FROM answers WHERE question_id=? ORDER BY version', (qid,)):
+        messages.append(dict(role='assistant', author='卡序问答助手', text=row['plain_md'],
+                             at=row['created_at'], version=row['version'], round=row['turn_round'],
+                             needs_review=bool(row['needs_review']), detail=row['detail_md'],
+                             evidence=json.loads(row['evidence_json'] or '[]'),
+                             mismatches=json.loads(row['mismatches_json'] or '[]'), commit=row['commit_sha']))
+    return sorted(messages, key=lambda item: (item['at'], item['role'] == 'assistant'))
+
+
+def sync_question_entry(c, qid):
+    """Archive every thread immediately, including pending/failed/unreviewed answers.
+
+    Internal scope keeps shared team questions out of anonymous search and exports.
+    The caller owns the DB transaction; Markdown remains the entry truth source.
+    """
+    q = c.execute('SELECT * FROM questions WHERE id=?', (qid,)).fetchone()
+    if not q:
+        return
+    # Keep previously curated KB-* Markdown untouched; the thread gets its own entry.
+    eid = 'Q-' + qid
+    title = q['raw_text'].strip().replace('\n', ' ')[:100]
+    body = ['## 问题记录', f"状态：{q['status']}", f"原始提问人：{q['asker'] or '未知历史作者'}",
+            '本页自动收录问答记录；收录不代表答案已审核或证据充分。']
+    for message in thread_messages(c, qid):
+        stamp = datetime.datetime.fromtimestamp(message['at'], datetime.timezone.utc).astimezone(
+            datetime.timezone(datetime.timedelta(hours=8))).isoformat(timespec='seconds')
+        body.extend([f"## {'提问' if message['role']=='user' else '回答'} · {message['author']} · {stamp}", message['text']])
+        if message.get('legacy'):
+            body.append('历史追问由旧审计记录恢复，可能截断；原完整内容及轮次关联无法确认。')
+        if message.get('needs_review'):
+            body.append('此回答需审核：证据不足或命中过滤，请勿视作已确认结论。')
+        if message.get('detail'):
+            body.extend(['### 依据（专业版）', message['detail']])
+        for ev in message.get('evidence', []):
+            body.append(f"- `{ev.get('file')}:{ev.get('line')}` {ev.get('quote', '')}")
+        for mismatch in message.get('mismatches', []):
+            body.append('文案与代码不一致：' + mismatch)
+    meta = dict(id=eid, title=title, tags=['问答记录'], scope='internal', status='published',
+                source_question=qid, updated=datetime.date.today().isoformat())
+    path = ENTRIES / f'{eid}.md'
+    tmp = path.with_suffix('.tmp')
+    tmp.write_text(dump_md(meta, '\n\n'.join(body)), encoding='utf-8')
+    tmp.replace(path)
+    _index_one(c, path)
+    c.execute('UPDATE questions SET entry_id=? WHERE id=?', (eid, qid))
 
 
 def _trigrams(q):
