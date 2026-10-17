@@ -1,12 +1,29 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{% block title %}卡序问答库{% endblock %}</title>
-<link rel="stylesheet" href="/static/app.css"></head><body>
-<header><div class="bar">
-  <a class="brand" href="/">卡序问答库</a>
-  <nav><a href="/">提问</a><a href="/kb">资料库</a>{% if user %}<a href="/mine">我的提问</a>{% endif %}<a href="/help">帮助</a>{% if user and user.is_admin %}<a href="/admin">管理</a>{% endif %}</nav>
+<link rel="stylesheet" href="/static/app.css?v=shared-shell-20261016"></head><body>
+{% set path = request.url.path if request is defined else '/' %}
+{% set section = '资料库' if path.startswith('/kb') else '我的提问' if path.startswith('/mine') else '帮助' if path.startswith('/help') else '管理' if path.startswith('/admin') else '登录' if path.startswith('/login') else '问题详情' if path.startswith('/q/') else '知识库首页' %}
+<div class="kb-app">
+<aside class="kb-sidebar" aria-label="知识库导航">
+<div class="kb-project">
+  <details class="project-switcher"><summary title="切换项目"><span>知识库</span><span class="project-chevron" aria-hidden="true">⌄</span></summary><nav aria-label="项目切换"><a href="http://192.168.31.145:8000/"><span>研发平台</span><span aria-hidden="true"></span></a><a href="http://192.168.31.145:9090/"><span>协作看板</span><span aria-hidden="true"></span></a><a href="http://192.168.31.145:8090/" aria-current="page"><span>知识库</span><span aria-hidden="true">✓</span></a></nav></details>
+ </div>
+ <div class="kb-nav-label">工作空间</div>
+ <nav class="kb-side-nav" aria-label="主导航">
+   <a href="/"{% if path == '/' %} aria-current="page"{% endif %}>知识库首页</a>
+   <a href="/kb"{% if path.startswith('/kb') %} aria-current="page"{% endif %}>资料库</a>
+   {% if user %}<a href="/mine"{% if path.startswith('/mine') %} aria-current="page"{% endif %}>我的提问</a>{% endif %}
+   <a href="/help"{% if path.startswith('/help') %} aria-current="page"{% endif %}>帮助 / MCP</a>
+   {% if user and user.is_admin %}<a href="/admin"{% if path.startswith('/admin') %} aria-current="page"{% endif %}>管理</a>{% endif %}
+ </nav>
+ <div class="kb-side-bottom">CardOrder · 团队知识库</div>
+</aside>
+<div class="kb-main-col">
+<header class="kb-topbar"><span class="kb-breadcrumb">{{ section }}</span>
   <div class="me"><span title="作答电脑{{ '在线' if worker_online else '离线' }}"><span class="dot {{ 'on' if worker_online }}"></span>作答{{ '在线' if worker_online else '离线' }}</span>
   {% if user %}{{ user.name }} · <a href="/logout">退出</a>{% endif %}</div>
-</div></header>
+</header>
 <main>{% block body %}{% endblock %}</main>
+</div></div>
 </body></html>
